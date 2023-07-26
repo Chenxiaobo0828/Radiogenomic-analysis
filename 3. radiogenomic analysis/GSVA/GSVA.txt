@@ -1,0 +1,34 @@
+# -------------------------- GSVA 2023.6.13 --------------------------------------
+cat("\014"); rm(list = ls()); options(stringsAsFactors = F); options(warn = -1)
+library(limma);library(GSEABase);library(GSVA);library(pheatmap)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+
+# fpkm=read.csv("Inter-tr-ComBat_TME_Hub_GGH.csv",row.names = 1); fpkm=as.matrix(fpkm); co=1
+fpkm=read.csv("Inter-te-ComBat_TME_Hub_GGH.csv",row.names = 1); fpkm=as.matrix(fpkm); co=2
+
+# ----------- log2 TPM ------------------------------
+fpkmToTpm <- function(fpkm){exp(log(fpkm+1) - log(sum(fpkm)+1) + log(1e6))}
+tpm <- log2(apply(fpkm,2,fpkmToTpm) + 1)
+
+Key.gene = read.table('total.txt')
+Key.tpm = tpm[Key.gene$V1, ]
+
+
+# ---------- GSVA ----------------
+gsva_C2   = getGmt("c2.all.v7.5.1.symbols.gmt")
+gsva_C5   = getGmt("c5.all.v7.5.1.symbols.gmt")
+gsva_HALL = getGmt( "h.all.v7.5.1.symbols.gmt")
+
+
+rgtGsvaC2  <- gsva(Key.tpm, gsva_C2,    min.sz=5, max.sz=500, mx.diff=TRUE, verbose=FALSE, parallel.sz=8)
+rgtGsvaC5  <- gsva(Key.tpm, gsva_C5,    min.sz=5, max.sz=500, mx.diff=TRUE, verbose=FALSE, parallel.sz=8)
+rgtGsvaHALL<- gsva(Key.tpm, gsva_HALL,  min.sz=5, max.sz=500, mx.diff=TRUE, verbose=FALSE, parallel.sz=8)
+
+
+rgtGsvaAll = rbind(rgtGsvaC2, rgtGsvaC5, rgtGsvaHALL)
+rgtGsvaAllPathway = data.frame(rgtGsvaAll)
+print(paste0('Num:', dim(rgtGsvaAllPathway)[1]))
+if(co==1){write.csv(rgtGsvaAllPathway, file = "path train.csv", row.names = T)}
+if(co==2){write.csv(rgtGsvaAllPathway, file = "path test.csv", row.names = T)}
+

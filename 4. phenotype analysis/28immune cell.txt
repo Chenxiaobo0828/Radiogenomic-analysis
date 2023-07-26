@@ -1,0 +1,28 @@
+# ------------------ CYT-TIL-IFN ------------------------------------
+cat("\014"); rm(list = ls()); options(warn = -1); options(digits=3); library(GSVA);library(limma);library(GSEABase)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# -----------------------------------------
+FPKM=read.csv("ComBat_Hub_GGH_FPKM.csv", row.names = 1)
+FPKM[which(FPKM<0)] = 0
+
+# ----------- log2 TPM------------------------------
+fpkmToTpm <- function(fpkm){exp(log(fpkm+1) - log(sum(fpkm)+1) + log(1e6))}
+TPM <- log2(apply(FPKM,2,fpkmToTpm)+1); min(TPM)
+
+
+gmtFile = "28immune cell.gmt"
+geneSet = getGmt(gmtFile, geneIdType=SymbolIdentifier())
+
+#ssgsea
+ssgseaScore=gsva(TPM, geneSet, method='ssgsea', kcdf='Gaussian', abs.ranking=TRUE)
+#ssGSEA score
+normalize=function(x){
+  return((x-min(x))/(max(x)-min(x)))}
+#ssGSEA score
+ssgseaOut=normalize(ssgseaScore)
+ssgseaOut=rbind('p_ID'=colnames(ssgseaOut),ssgseaOut)
+write.csv(t(ssgseaOut), file=paste0(gmtFile, ".csv"), row.names = F)
+
+
+

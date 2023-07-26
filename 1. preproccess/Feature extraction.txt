@@ -1,0 +1,57 @@
+# https://pyradiomics.readthedocs.io/en/latest/features.html #
+# -----------Feature extraction-------------------
+from radiomics import featureextractor
+import pandas as pd
+import os 
+import glob   
+import SimpleITK as sitk
+import traceback
+
+os.chdir(r'G:\T1CRC\zhongliu\NII\TEST')  #【Image】 + 【ROI】  (nii/nii.gz)
+num_label = 1 
+
+# ------------------------
+film_list = os.listdir()                 
+film_list = sorted(film_list)                
+print(film_list, '\n N = ', len(film_list), '\n')
+
+cc = 0
+film = pd.DataFrame(film_list[::2]) 
+
+
+df = pd.DataFrame()
+Error_list = pd.DataFrame({'Error': [], 'Reason': []})
+for ii in range(cc * 2, len(film_list), 2):
+    filename = film_list[ii]
+    print('filename', ii, ':', str(filename[K0:K]))
+    start = str(filename[K0:K])
+    # ---------------------- ----------------------------
+    image_List = glob.glob(start + '*image.nii.gz')  # 【0308.nii.gz】
+    print('image_List', image_List)
+    mask_List = glob.glob(start + '*mask.nii.gz')  # 【0308_Merge.nii】
+    print('mask_List', mask_List)
+
+    # #--------------------------------------------------------------
+    # 1.feature extractor
+    settings = {'binWidth': 25, 'resampledPixelSpacing': [1, 1, 1],
+                'interpolator': sitk.sitkBSpline, 'normalize': True, 'normalizeScale': 100}
+    extractor = featureextractor.RadiomicsFeatureExtractor(**settings)
+    # 2.Exponential、LoG、Square、Wavelet
+    extractor.enableImageTypes(Original={}, Square={}, Wavelet={})
+
+    for imageName, maskName in zip(image_List, mask_List):
+        try:
+            featureVector = extractor.execute(imageName, maskName, label=num_label)
+            df_add = pd.DataFrame.from_dict(featureVector.values()).T
+            df_add.columns = featureVector.keys()
+            df = df.append(pd.concat([pd.DataFrame({'p_ID': filename}, index=[0]), df_add], axis=1))
+            print('', ii/2+1, '/', len(film_list) / 2, '=', round((ii + 2) / len(film_list), 3), '\n\n')
+        except:
+            print(traceback.format_exc(limit=None, chain=True))
+            Error_list.loc[ii, :] = [filename, traceback.format_exc()]
+            print('Error:', filename)
+
+# --------- Save -------------
+df.to_csv('Radiomic results.csv', encoding='gbk', index=False)
+Error_list.to_csv('Error_list.csv', encoding='gbk', index=False)
+print('Feture Extration is Finish')

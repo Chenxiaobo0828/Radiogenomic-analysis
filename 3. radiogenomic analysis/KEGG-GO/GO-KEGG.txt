@@ -1,0 +1,72 @@
+## --------------------  GO----------------------
+cat("\014"); rm(list = ls()); options(warn = -1); options(digits=3); library("clusterProfiler");library("org.Hs.eg.db");library("enrichplot");library("ggplot2")
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+pvalueFilter=0.05 
+qvalueFilter=0.05   
+
+
+is_text_file <- function(file_name) {ext <- tools::file_ext(file_name);  return(ext == "txt")}
+Modules.File = list.files()[which(is_text_file(list.files()))]; Modules.File
+
+for (k in c(1:length(Modules.File))) {
+
+  inputFile = Modules.File[k]; print(inputFile)
+  rt=read.table(inputFile, header=F, sep="\t", check.names=F)
+  
+
+  colorSel="qvalue";  if(qvalueFilter>0.05){colorSel="pvalue"}
+  
+
+  genes=unique(as.vector(rt[,1]))
+  entrezIDs=mget(genes, org.Hs.egSYMBOL2EG, ifnotfound=NA)
+  entrezIDs=as.character(entrezIDs)
+  gene=entrezIDs[entrezIDs!="NA"]      
+  gene=gsub("c\\(\"(\\d+)\".*", "\\1", gene)
+  if (length(gene)==0){next}
+  
+  # ---------------- GO -------------------
+  kk=enrichGO(gene=gene, OrgDb=org.Hs.eg.db, pvalueCutoff=0.05, qvalueCutoff=0.05, ont="all", readable=T)
+  GO=as.data.frame(kk)
+  GO=GO[(GO$pvalue<pvalueFilter & GO$qvalue<qvalueFilter),]
+  write.table(GO, file=paste0("GO_",inputFile), sep="\t", quote=F, row.names = F)
+  
+
+  showNum=5; if(nrow(GO)<showNum){showNum=nrow(GO)}; showNum1 = showNum
+  
+
+  if (showNum!=0){
+    pdf(file=paste0("GO_",inputFile,".pdf"), width=5.5, height=8)
+    print(barplot(kk, drop=TRUE, showCategory=showNum, split="ONTOLOGY", color=colorSel) + facet_grid(ONTOLOGY~., scale='free')); dev.off()}
+  
+
+  # pdf(file=paste0("GO_",inputFile,".pdf"), width=5.5, height=8.5)
+  # dotplot(kk, showCategory=showNum, orderBy="GeneRatio", split="ONTOLOGY", color=colorSel) + facet_grid(ONTOLOGY~., scale='free')
+  # dev.off()
+  
+  
+  
+  
+  # --------------------- KEGG---------------------
+  options(clusterProfiler.download.method = "wininet")
+  kk=enrichKEGG(gene=gene, keyType = 'kegg',organism="hsa",pAdjustMethod = 'fdr', pvalueCutoff=0.1, qvalueCutoff=0.1)
+  KEGG=as.data.frame(kk)
+  KEGG$geneID=as.character(sapply(KEGG$geneID,function(x)paste(rt$genes[match(strsplit(x,"/")[[1]],as.character(rt$entrezID))],collapse="/")))
+  KEGG=KEGG[(KEGG$pvalue<pvalueFilter & KEGG$qvalue<qvalueFilter),]
+  #
+  write.table(KEGG, file=paste0("KEGG_",inputFile), sep="\t", quote=F, row.names = F)
+  
+  #
+  showNum=10; if(nrow(KEGG)<showNum){showNum=nrow(KEGG)}; showNum2 = showNum
+  
+
+  # pdf(file=paste0("KEGG_",inputFile,".pdf"), width = 5.5, height=5)
+  # barplot(kk, drop=TRUE, showCategory=showNum, color=colorSel)
+  # dev.off()
+
+  if (showNum!=0){
+    pdf(file=paste0("KEGG_",inputFile,".pdf"), width = 5.5, height = 6.3); 
+    print(dotplot(kk, showCategory=showNum, orderBy="GeneRatio", color=colorSel)); dev.off()}
+  
+  print(paste0(inputFile, ' Num1=',showNum1, ' Num2=',showNum2))
+}; print('finish')

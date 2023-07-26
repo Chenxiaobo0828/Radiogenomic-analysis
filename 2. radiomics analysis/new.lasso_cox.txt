@@ -1,0 +1,144 @@
+# ------------------Shelby Chen -- Cox----------------
+dev.off(); dev.off(); dev.off()
+cat("\014"); rm(list = ls()); options(warn = -1)
+library(survival);library(caret);library(glmnet);library(survminer);library(timeROC); pacman::p_load("rms")
+
+coxPfilter=0.05
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+Hos1_file = "Comb_ICC_GGH_new.csv";  Hos1 = read.csv(Hos1_file)
+Hos2_file = "Comb_ICC_CQ_new.csv";   Hos2 = read.csv(Hos2_file)
+Hos3_file = "Comb_ICC_YN_new.csv";   Hos3 = read.csv(Hos3_file)  
+Hos4_file = "Comb_ICC_TCIA_new.csv"; Hos4 = read.csv(Hos4_file)
+
+
+# ---------------------
+cc = 16  
+Hos1_clin = Hos1[,c(1:cc)]; Hos1_data = Hos1[,-c(4:cc)]
+Hos2_clin = Hos2[,c(1:cc)]; Hos2_data = Hos2[,-c(4:cc)]
+Hos3_clin = Hos3[,c(1:cc)]; Hos3_data = Hos3[,-c(4:cc)]
+Hos4_clin = Hos4[,c(1:cc)]; Hos4_data = Hos4[,-c(4:cc)]
+
+
+
+# ----------------------- Uni_cox + LASSO-cox -----------------------
+j=0; P=data.frame(train=numeric(), test=numeric(), val1=numeric(), val2=numeric(), seed=numeric())
+AUC=data.frame(train=numeric(), test=numeric(), val1=numeric(), val2=numeric(), seed=numeric())
+
+
+  j = j+1; set.seed(100)
+  # -------------------------
+  split1 = sample(nrow(Hos1_data), 0.7*nrow(Hos1_data))
+  split2 = sample(nrow(Hos2_data), 0.7*nrow(Hos2_data))
+  train_data = rbind(Hos1_data[ split1, ], Hos2_data[ split2, ])
+  test_data  = rbind(Hos1_data[-split1, ], Hos2_data[-split2, ])
+  
+  # ---------- 1. Uni.cox ------------
+  outUniTab=data.frame();   sigGenes=c("futime","fustat")
+  for(i in colnames(train_data[,4:ncol(train_data)])){cox <- coxph(Surv(futime, fustat) ~ train_data[,i], data = train_data); coxSummary = summary(cox); coxP=coxSummary$coefficients[,"Pr(>|z|)"]
+  # -------- ------------
+  if(coxP<coxPfilter){sigGenes=c(sigGenes,i);outUniTab=rbind(outUniTab,cbind(id=i,HR=round(coxSummary$conf.int[,"exp(coef)"],3),HR.95L=round(coxSummary$conf.int[,"lower .95"],3),HR.95H=round(coxSummary$conf.int[,"upper .95"],3),pvalue=round(coxSummary$coefficients[,"Pr(>|z|)"],3)))}};uniSigExp=train_data[,sigGenes]; uniSigExpOut=cbind(id=row.names(uniSigExp),uniSigExp)
+  print(paste0('Uni_Cox:', length(sigGenes))); if(length(sigGenes)<5){next}
+  
+  # ---------------- lasso-------------------
+  x=as.matrix(train_data[,sigGenes[3:length(sigGenes)]])
+  y=data.matrix(Surv(train_data$futime, train_data$fustat))
+  set.seed(100); fit <- glmnet(x, y, family = "cox", maxit = 1000)
+  cvfit <- cv.glmnet(x, y, family="cox", maxit = 1000, type.measure = "C",nfolds = 10)
+  coef <- coef(fit, s = cvfit$lambda.min);index <- which(coef != 0); actCoef <- coef[index]; lassoGene=row.names(coef)[index]; lassoSigExp=uniSigExp[,c("futime", "fustat", lassoGene)]; lassoSigExpOut=cbind(id=row.names(lassoSigExp), lassoSigExp);geneCoef=cbind(Gene=lassoGene, Coef=actCoef); print(paste0('LASSO-COX 筛选特征数量：', nrow(geneCoef)));if(nrow(geneCoef)<2){next}
+  
+  multiCox <- coxph(Surv(futime, fustat) ~ ., data = lassoSigExp)
+  if(nrow(geneCoef)>20){multiCox=step(multiCox,direction = "both", trace = FALSE)}
+  multiCoxSum=summary(multiCox); multiCoxSum; AIC = min(multiCox[["anova"]][["AIC"]]); AIC
+  if (is.na(sum(multiCoxSum$coefficients[, "coef"]))){next}
+  print(paste0('Step_Cox:', length(multiCoxSum$coefficients[, "coef"])))
+  
+
+  outMultiTab=data.frame(cbind(coef=multiCoxSum$coefficients[,"coef"],HR=round(multiCoxSum$conf.int[,"exp(coef)"],3),HR.95L=round(multiCoxSum$conf.int[,"lower .95"],3),HR.95H=round(multiCoxSum$conf.int[,"upper .95"],3),pvalue=round(multiCoxSum$coefficients[,"Pr(>|z|)"],3)))
+  coxGene=rownames(multiCoxSum$coefficients);  coxGene=gsub("`","",coxGene);  outCol=c("futime","fustat",coxGene)
+  
+  #train
+  riskScore=log(predict(multiCox,type="risk",newdata=train_data))
+  
+  # cutoff
+  mydata = data.frame(futime=train_data$futime, fustat=train_data$fustat, riskScore)
+  res.cut = surv_cutpoint(mydata, time = "futime",  event = "fustat",  variables = c("riskScore")); summary(res.cut) 
+  cut.off = res.cut[["riskScore"]][["estimate"]][["estimated cutpoint"]]; cut.off
+  
+  #test
+  risk=as.vector(ifelse(riskScore>cut.off,"High-risk","Low-risk"));  trainRiskOut=cbind(train_data[,outCol],riskScore,Risk=risk)
+  #test
+  riskScoreTest=log(predict(multiCox,type="risk",newdata=test_data)); riskTest=as.vector(ifelse(riskScoreTest>cut.off,"High-risk","Low-risk")); testRiskOut=cbind(test_data[,outCol],riskScore=riskScoreTest,Risk=riskTest)
+  #GEO
+  geoScore=log(predict(multiCox, type="risk", newdata=Hos3_data));  geoRisk=as.vector(ifelse(geoScore>cut.off, "High-risk", "Low-risk"));   geoRiskOut=cbind(Hos3_data[,outCol], riskScore=as.vector(geoScore), Risk=geoRisk)
+  #TCIA
+  TCIAScore=log(predict(multiCox, type="risk", newdata=Hos4_data));  TCIARisk=as.vector(ifelse(TCIAScore>cut.off, "High-risk", "Low-risk"));  TCIARiskOut=cbind(Hos4_data[,outCol], riskScore=as.vector(TCIAScore), Risk=TCIARisk)
+  
+  
+  library(Hmisc)
+  cdex0 <- round(rcorr.cens(riskScore, Surv(train_data$futime, train_data$fustat)),3);c_train <- 1-cdex0; vn_train_upper <- cdex0[3]/2*1.96+c_train; vn_train_lower <- c_train-cdex0[3]/2*1.96
+  cdex1 <- round(rcorr.cens(riskScoreTest, Surv(test_data$futime, test_data$fustat)),3);c_test1 <- 1-cdex1; vn_test1_upper <- cdex1[3]/2*1.96+c_test1; vn_test1_lower <- c_test1-cdex1[3]/2*1.96
+  cdex2 <- round(rcorr.cens(geoScore, Surv(Hos3_data$futime, Hos3_data$fustat)),3);  c_GEO <- 1-cdex2; vn_GEO_upper <- cdex1[3]/2*1.96+c_GEO; vn_GEO_lower <- c_GEO-cdex1[3]/2*1.96
+  cdex3 <- round(rcorr.cens(TCIAScore, Surv(Hos4_data$futime, Hos4_data$fustat)),3);  c_TCIA <- 1-cdex3; vn_TCIA_upper <- cdex1[3]/2*1.96+c_TCIA; vn_TCIA_lower <- c_TCIA-cdex1[3]/2*1.96
+  paste0('C-index_train ',c_train[1], ' ',vn_train_lower[1], '~', vn_train_upper[1]); paste0('C-index_test  ',c_test1[1], ' ',vn_test1_lower[1], '~', vn_test1_upper[1])   ;paste0('C-index_val1  ',c_GEO[1], ' ',vn_GEO_lower[1], '~', vn_GEO_upper[1]   );  paste0('C-index_val2  ',c_TCIA[1], ' ',vn_TCIA_lower[1], '~', vn_TCIA_upper[1] )  
+  
+  # ---------- pvalue -----------------
+  diff=survdiff(Surv(futime, fustat) ~Risk,data = trainRiskOut);  pValue=round(1-pchisq(diff$chisq, df=1), 3)
+  diffTest=survdiff(Surv(futime, fustat) ~Risk, data=testRiskOut); pValueTest=round(1-pchisq(diffTest$chisq, df=1), 3)
+  diffGEO =survdiff(Surv(futime, fustat) ~Risk, data=geoRiskOut);   pValueGEO=round(1-pchisq(diffGEO$chisq, df=1), 3)
+  diffTCIA=survdiff(Surv(futime, fustat) ~Risk, data=TCIARiskOut);  pValueTCIA=round(1-pchisq(diffTCIA$chisq, df=1), 3)
+  
+  print(paste0("P_train:", pValue, "  P_test:", pValueTest, "  P_GEO:", pValueGEO, "  P_TCIA:", pValueTCIA))
+  print(paste0("train AUC:", c_train[1],"   test AUC:", c_test1[1],"   val1AUC:", c_GEO[1],"   val2AUC:", c_TCIA[1]))
+ 
+  
+  
+    tp=1
+    library(survival); library(survminer)
+    if (tp==1){pdf(paste0("KM_tr.pdf"), width=5, height=4.9, onefile = FALSE)}
+    KM_data = trainRiskOut
+    fit1 = survfit(Surv(KM_data$futime, KM_data$fustat) ~ KM_data$Risk)
+    print(ggsurvplot(fit1, data = KM_data, risk.table = TRUE, pval = TRUE, conf.int = TRUE,xlab = "Time (Year)",ggtheme = theme_survminer(),risk.table.y.text.col = T,risk.table.height = 0.33,risk.table.y.text = FALSE,risk.table.col="Risk",ncensor.plot = FALSE,pval.method = TRUE,conf.int.style = "NULL",surv.median.line = "none",legend = c(0.8,0.17), legend.title = "", legend.labs=c("High-risk", "Low-risk"), break.time.by=24));if (tp==1){dev.off()}
+    
+    if (tp==1){pdf(paste0("KM_te.pdf"), width=5, height=4.9, onefile = FALSE)}
+    KM_data = testRiskOut
+    fit2 = survfit(Surv(KM_data$futime, KM_data$fustat) ~ KM_data$Risk)
+    print(ggsurvplot(fit2, data = KM_data, risk.table = TRUE, pval = TRUE, conf.int = TRUE,xlab = "Time (Year)",ggtheme = theme_survminer(),risk.table.y.text.col = T,risk.table.height = 0.33,risk.table.y.text = FALSE,risk.table.col="Risk",ncensor.plot = FALSE,pval.method = TRUE,conf.int.style = "NULL",surv.median.line = "none",legend = c(0.8,0.17), legend.title = "", legend.labs=c("High-risk", "Low-risk"), break.time.by=24));if (tp==1){dev.off()}
+    
+    if (tp==1){pdf(paste0("KM_va ", Hos3_file, ".pdf"), width=5, height=4.9, onefile = FALSE)}
+    KM_data = geoRiskOut
+    fit3 = survfit(Surv(KM_data$futime, KM_data$fustat) ~ KM_data$Risk)
+    print(ggsurvplot(fit3, data = KM_data, risk.table = TRUE, pval = TRUE, conf.int = TRUE,xlab = "Time (Year)",ggtheme = theme_survminer(),risk.table.y.text.col = T,risk.table.height = 0.33,risk.table.y.text = FALSE,risk.table.col="Risk",ncensor.plot = FALSE,pval.method = TRUE,conf.int.style = "NULL",surv.median.line = "none",legend = c(0.8,0.17), legend.title = "", legend.labs=c("High-risk", "Low-risk"), break.time.by=12));if (tp==1){dev.off()}
+    
+    if (tp==1){pdf(paste0("KM_va ", Hos4_file, ".pdf"), width=5, height=4.9, onefile = FALSE)}
+    KM_data = TCIARiskOut
+    fit4 = survfit(Surv(KM_data$futime, KM_data$fustat) ~ KM_data$Risk)
+    print(ggsurvplot(fit4, data = KM_data, risk.table = TRUE, pval = TRUE, conf.int = TRUE,xlab = "Time (Year)",ggtheme = theme_survminer(),risk.table.y.text.col = T,risk.table.height = 0.33,risk.table.y.text = FALSE,risk.table.col="Risk",ncensor.plot = FALSE,pval.method = TRUE,conf.int.style = "NULL",surv.median.line = "none",legend = c(0.8,0.17), legend.title = "", legend.labs=c("High-risk", "Low-risk"), break.time.by=12));if (tp==1){dev.off()}
+    
+    # uni
+    row.names(outUniTab) = outUniTab$id; write.csv(outUniTab,file="uni_trainCox.csv",row.names=F)
+    #lasso
+    pdf("lasso.lambda.pdf"); plot(fit, xvar = "lambda", label = TRUE); abline(v=log(c(cvfit$lambda.min)), lty="dashed"); dev.off()
+    pdf("lasso.cvfit.pdf");  plot(cvfit);abline(v=log(cvfit$lambda.min), lty="dashed");dev.off()
+    # mul
+    write.csv(outMultiTab,file="multi_Cox.csv",row.names=T)
+    
+    New.tab = outUniTab[intersect(outUniTab$id, row.names(outMultiTab)), ]
+    New.tab = New.tab[order(New.tab$HR), ]; New.tab$id = paste0('f', c(1:nrow(New.tab)))
+    write.csv(New.tab,file="Uni_key_Cox.csv",row.names=T)
+    
+    #clin_risk
+    tr_clin = rbind(Hos1_clin[ split1, ], Hos2_clin[ split2, ])
+    te_clin = rbind(Hos1_clin[-split1, ], Hos2_clin[-split2, ])
+    risk_TCGAtrain = cbind(tr_clin,   trainRiskOut[,-c(1,2)])
+    risk_TCGAtest  = cbind(te_clin,   testRiskOut[,-c(1,2)])
+    risk_GEO       = cbind(Hos3_clin, geoRiskOut[,-c(1,2)])
+    risk_TCIA      = cbind(Hos4_clin, TCIARiskOut[,-c(1,2)])
+    write.csv(risk_TCGAtrain,file=paste0('tr_risk.csv'), row.names=F)
+    write.csv(risk_TCGAtest, file=paste0('te_risk.csv'), row.names=F)
+    write.csv(risk_GEO,      file=paste0('va_risk_', Hos3_file), row.names=F)
+    write.csv(risk_TCIA,     file=paste0('va_risk_', Hos4_file), row.names=F)
+    break
+  }
+}
+print('finish')

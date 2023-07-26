@@ -1,0 +1,256 @@
+## --------------------  WGCNA ----------------------
+cat("\014"); rm(list = ls());options(warn = -1); options(digits=3); library(limma);library(WGCNA)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# ----------- train ------------------
+expFile="Inter-tr-ComBat_TME_Hub_GGH.csv"           
+rt=read.csv(expFile); rt=as.matrix(rt);rownames(rt)=rt[,1];exp=rt[,2:ncol(rt)];dimnames=list(rownames(exp),colnames(exp));data=matrix(as.numeric(as.matrix(exp)), nrow=nrow(exp), dimnames=dimnames)
+data=avereps(data); data[which(data<0)]=0; 
+
+data=data[apply(data,1,sd)>0.2,] 
+
+# -----------log2 TPM ------------------------------
+fpkmToTpm <- function(fpkm){exp(log(fpkm+1) - log(sum(fpkm)+1) + log(1e6))}
+TPM <- apply(data,2,fpkmToTpm)
+datExpr0 = log2(TPM+1)
+
+
+gsg <-  goodSamplesGenes(datExpr0, verbose = 3)
+gsg$allOK
+
+
+
+
+# --- val ---------------
+datExpr_train = datExpr0
+# data2=read.csv('ComBat_TME_Hub_Ave_TCGA_COAD_READ.csv',row.names = 1)
+data2=read.csv('Inter-te-ComBat_TME_Hub_GGH.csv',row.names = 1)
+
+data[which(data<0)] = 0; data2 <- log2(apply(data2,2,fpkmToTpm)+1)
+
+
+
+Inter_gene = intersect(row.names(datExpr_train), row.names(data2))
+datExpr2 = data2[Inter_gene, ]
+datExpr0 = datExpr0[Inter_gene,]
+
+
+
+datExpr0 = t(datExpr0); dim(datExpr0)
+K = 5000; if (dim(datExpr0)[2]>K) {datExpr0 <- datExpr0[,order(apply(datExpr0,2,mad),decreasing = T)[1:K]]} 
+dim(datExpr0)  # 214 2302
+
+###
+cutHeight = 1000
+sampleTree = hclust(dist(datExpr0), method = "average")
+# par(cex = 0.6); par(mar = c(0,4,2,0))
+pdf('1.pdf', width = 12, height = 8)
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, cex.axis = 1.5, cex.main = 2)
+abline(h = cutHeight, col = "red")
+dev.off()
+
+clust = cutreeStatic(sampleTree, cutHeight = cutHeight, minSize = 0)
+table(clust)
+keepSamples = (clust==1)
+datExpr1 = datExpr0[keepSamples, ]
+
+###power
+enableWGCNAThreads()  
+powers = c(1:20) 
+sft = pickSoftThreshold(datExpr1, powerVector = powers, verbose = 5)
+pdf(file="2_scale_independence.pdf",width=9,height=5)
+par(mfrow = c(1,2))
+cex1 = 0.9
+
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+abline(h=cex1,col="red") 
+###
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+dev.off()
+
+
+###
+sft 
+softPower =sft$powerEstimate   
+adjacency = adjacency(datExpr1, power = softPower)
+softPower
+
+###TOM
+TOM = TOMsimilarity(adjacency)
+dissTOM = 1-TOM
+
+###
+geneTree = hclust(as.dist(dissTOM), method = "average")
+# pdf(file="3_gene_clustering.pdf",width=12,height=9)
+# plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity",
+#      labels = FALSE, hang = 0.04)
+# dev.off()
+
+
+###
+minModuleSize=30      #
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM,
+                            deepSplit =2, pamRespectsDendro = FALSE,
+                            # cutHeight = 0.97,
+                            minClusterSize = minModuleSize)
+table(dynamicMods)
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+pdf(file="4_Dynamic_Tree.pdf",width=7,height=5.5)
+plotDendroAndColors(geneTree, dynamicColors, "Module color",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05,
+                    main = "Cluster dendrogram")
+dev.off()
+
+
+###
+MEList = moduleEigengenes(datExpr1, colors = dynamicColors)
+MEs = MEList$eigengenes # 
+MEDiss = 1-cor(MEs);
+METree = hclust(as.dist(MEDiss), method = "average")
+pdf(file="5_Clustering_module.pdf",width=7,height=7)
+plot(METree, main = "Clustering of module eigengenes",
+     xlab = "", sub = "")
+MEDissThres = 0.5  #
+abline(h=MEDissThres, col = "red")
+dev.off()
+
+
+###
+merge = mergeCloseModules(datExpr1, dynamicColors, cutHeight = MEDissThres, verbose = 3)
+mergedColors = merge$colors
+mergedMEs = merge$newMEs
+pdf(file="6_merged_dynamic.pdf", width = 9, height = 7)
+plotDendroAndColors(geneTree, mergedColors,"Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05,
+                    main = "Gene dendrogram and module colors")
+dev.off()
+moduleColors = mergedColors
+table(moduleColors)
+colorOrder = c("grey", standardColors(50))
+moduleLabels = match(moduleColors, colorOrder)-1
+MEs = mergedMEs
+write.csv(MEs, 'ModuleScore.csv')
+
+
+###
+cliFile="Inter-tr_risk.csv"            #clin
+cli=read.csv(cliFile, row.names=1)
+sameSample=intersect(row.names(cli), row.names(MEs))
+MEs=MEs[sameSample,]
+datTraits=cli[sameSample,]
+nGenes = ncol(datExpr1)
+nSamples = nrow(datExpr1)
+moduleTraitCor = round(cor(MEs, datTraits, use = "p"), 3)
+moduleTraitPvalue = round(corPvalueStudent(moduleTraitCor, nSamples), 3)
+pdf(file="7_Module_trait2.pdf", width=ncol(cli)/1.8, height=ncol(cli)/2.3)
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 2), ")", sep = "")
+sig = signif(moduleTraitPvalue, 2)
+textMatrix = ifelse(sig<0.001,'***', ifelse(sig<0.010,'**', ifelse(sig<0.050,'*', ''))) 
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(7, 7, 3, 1.5))
+labeledHeatmap(Matrix = moduleTraitCor, xLabels = names(datTraits), yLabels = names(MEs), ySymbols = names(MEs), colorLabels = FALSE, colors = blueWhiteRed(50), textMatrix = textMatrix, setStdMargins = FALSE, 
+               cex.text = 0.65, zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+dev.off()
+
+###
+probes = colnames(datExpr1)
+geneInfo0 = data.frame(probes= probes,
+                       moduleColor = moduleColors)
+geneOrder =order(geneInfo0$moduleColor)
+geneInfo = geneInfo0[geneOrder, ]
+# write.table(geneInfo, file = "allModules.txt",sep="\t",row.names=F,quote=F)
+
+end = ncol(moduleTraitPvalue)
+###
+for (mod in 1:nrow(table(moduleColors))){  
+  modules = names(table(moduleColors))[mod]
+  if (moduleTraitPvalue[paste0('ME', modules), end] < 1){
+  probes = colnames(datExpr0)
+  inModule = (moduleColors == modules)
+  modGenes = probes[inModule]
+  write.table(modGenes, file =paste0(modules,".txt"),sep="\t",row.names=F,col.names=F,quote=F)
+}}
+
+softPower
+
+
+
+
+
+
+# --- val---------------
+datExpr_train = t(datExpr0)
+# data2=read.csv('Inter-te-ComBat_TME_Hub_GGH.csv',row.names = 1)
+# data[which(data<0)] = 0; data2 <- data2 <- log2(apply(data2,2,fpkmToTpm)+1)
+data2=read.csv('ComBat_TME_Hub_Ave_TCGA_COAD_READ.csv',row.names = 1)
+data2[which(data2<0)] = 0; data2 <- log2(apply(t(data2),2,fpkmToTpm)+1)
+
+Inter_gene = intersect(row.names(datExpr_train), row.names(data2))
+datExpr2=data2[Inter_gene, ]
+
+
+  
+
+
+multiExpr = list(A1=list(data=datExpr0),A2=list(data=t(datExpr2))) 
+multiColor = list(A1 = moduleColors, A2 = moduleColors) 
+## modulePreservation
+mp=modulePreservation(multiExpr,multiColor,referenceNetworks=c(1:2),verbose=3,#networkType="signed", maxGoldModuleSize=100,maxModuleSize=400
+                      nPermutations=5,randomSeed = 60)
+
+  
+  # --------------- Zsummary ------------------
+  ref = 1; test = 2
+  statsObs = cbind(mp$quality$observed[[ref]][[test]][, -1], mp$preservation$observed[[ref]][[test]][, -1])
+  statsZ = cbind(mp$quality$Z[[ref]][[test]][, -1], mp$preservation$Z[[ref]][[test]][, -1]);
+  
+  print( cbind(statsObs[, c("medianRank.pres", "medianRank.qual")],
+               signif(statsZ[, c("Zsummary.pres", "Zsummary.qual")], 2)) )
+  zsummaryResult = cbind(statsObs[, c("medianRank.pres", "medianRank.qual")],
+                         signif(statsZ[, c("Zsummary.pres", "Zsummary.qual")], 2))
+  # Module labels and module sizes are also contained in the results
+  modColors = rownames(mp$preservation$observed[[ref]][[test]])
+  moduleSizes = mp$preservation$Z[[ref]][[test]][, 1];
+  # leave grey and gold modules out
+  plotMods = !(modColors %in% c( "qqq"));
+  # !(modColors %in% c("grey", "gold"));
+  # Text labels for points
+  text = modColors[plotMods];
+  # Auxiliary convenience variable
+  plotData = cbind(mp$preservation$observed[[ref]][[test]][, 2], mp$preservation$Z[[ref]][[test]][, 2])
+  mains = c("Preservation Median rank", "Preservation Zsummary")
+  
+  # Start the plot
+  pdf("Zsummary_TCGA.pdf", wi=9, h=7)
+  par(mfrow = c(1,2))
+  par(mar = c(4.5,4.5,2.5,1))
+  for (p in 1:2)
+  { min = min(plotData[, p], na.rm = TRUE);
+  max = max(plotData[, p], na.rm = TRUE);
+  # Adjust ploting ranges appropriately
+  if ((p==1)|(p==2))
+  {if (min > -max/10) min = -max/10
+  ylim = c(0, max + 0.01 * (max-min))
+  } else
+    ylim = c(0, min - 0.01 * (max-min))
+  plot(moduleSizes[plotMods], plotData[plotMods, p], col = 1, bg = modColors[plotMods], pch = 21,
+       main = mains[p], cex = 2.4, ylab = mains[p], xlab = "Module size", log = "x", ylim = ylim, xlim = c(5, 2000), cex.lab = 1.2, cex.axis = 1.2, cex.main =1.4)
+  for (tt in 1:length(text)) {
+    text(moduleSizes[plotMods][tt], plotData[plotMods, p][tt], text[tt],pos=1,cex = 1.5)}
+  if (p==2){abline(h=10, col = "darkgreen", lty = 2)}} # threshold lines
+  dev.off()
+
+
+
+

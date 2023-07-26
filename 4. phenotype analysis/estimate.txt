@@ -1,0 +1,31 @@
+## -------------------- Estimate---------------------
+# library(utils); install.packages("estimate", repos="http://r-forge.r-project.org", dependencies=TRUE)
+cat("\014"); rm(list = ls());options(warn = -1); options(digits=3); library(limma); library(estimate)
+
+# -------------------------------------------
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+FPKM=read.csv("ComBat_Hub_GGH_FPKM.csv",row.names = 1)
+FPKM[which(FPKM<0)] = 0
+
+# ----------- FPKM->TPM ---------------
+fpkmToTpm <- function(fpkm){exp(log(fpkm+1) - log(sum(fpkm)+1) + log(1e6))}
+TPM <- apply(FPKM,2,fpkmToTpm); min(TPM)
+
+
+write.table(FPKM,file="uniq.symbol.txt",sep="\t",quote=F,col.names=T)
+
+#estimate
+filterCommonGenes(input.f="uniq.symbol.txt", 
+                  output.f="commonGenes.gct",  
+                  id="GeneSymbol")
+
+estimateScore(input.ds = "commonGenes.gct",
+              output.ds="estimateScore.gct")
+
+
+scores=read.table("estimateScore.gct", skip=2, header=T)
+scores=t(scores[,2:ncol(scores)]); colnames(scores) = scores[1, ]; scores = scores[-1, ]
+scores=cbind('p_ID'=colnames(FPKM), scores)
+write.csv(scores, file="Score.csv", row.names = F)
+print('finish')
+
